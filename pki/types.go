@@ -69,6 +69,13 @@ var (
 	ErrRotationFailed = errors.New("pki: 轮换失败")
 )
 
+// 受管实体操作的可区分失败原因。
+var (
+	ErrEntityNotFound      = errors.New("pki: 受管实体不存在")
+	ErrEntityAlreadyExists = errors.New("pki: 受管实体已登记")
+	ErrUsageNotAuthorized  = errors.New("pki: 实体未被授权该用途")
+)
+
 // 标识与有效期的约束常量。
 const (
 	maxIdentityLen = 64
@@ -136,7 +143,11 @@ type Certificate struct {
 	NotAfter    time.Time
 	IssuerEpoch uint64 // 签发时使用的签发方密钥代数
 	SubjectID   string
-	Signature   []byte
+	// SubjectKeyID 是实体公钥的指纹；SubjectEpoch 是签发时该实体密钥的代次。
+	// 旧证书两者均为零值，校验时按旧规则放行（见兼容语义）。
+	SubjectKeyID string
+	SubjectEpoch uint64
+	Signature    []byte
 }
 
 // Verdict 是证书校验结论，各类失败彼此可区分。
@@ -150,6 +161,9 @@ const (
 	VerdictUsageMismatch
 	VerdictRevoked
 	VerdictBadSignature
+	VerdictUnknownEntity // 证书主体未在实体登记库中
+	VerdictSubjectEpoch  // 证书声称的实体密钥代次与登记库对不上
+	VerdictSubjectKey    // 实体公钥指纹与证书记录不一致
 )
 
 // String 返回结论的可读表示。
@@ -169,6 +183,12 @@ func (v Verdict) String() string {
 		return "REVOKED"
 	case VerdictBadSignature:
 		return "BAD_SIGNATURE"
+	case VerdictUnknownEntity:
+		return "UNKNOWN_ENTITY"
+	case VerdictSubjectEpoch:
+		return "SUBJECT_EPOCH_UNKNOWN"
+	case VerdictSubjectKey:
+		return "SUBJECT_KEY_MISMATCH"
 	default:
 		return fmt.Sprintf("Verdict(%d)", int(v))
 	}

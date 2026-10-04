@@ -17,6 +17,17 @@ func newTestCA(t *testing.T) *CA {
 	return ca
 }
 
+// registerTestEntity 在 ca 中登记一个实体，授权用途缺省为全部已知用途。
+func registerTestEntity(t *testing.T, ca *CA, identity string, usages KeyUsage) {
+	t.Helper()
+	if usages == 0 {
+		usages = knownUsages
+	}
+	if _, err := ca.RegisterEntity(identity, usages); err != nil {
+		t.Fatalf("RegisterEntity %s: %v", identity, err)
+	}
+}
+
 func validRequest(identity string, usages KeyUsage) IssueRequest {
 	return IssueRequest{
 		Identity:  identity,
@@ -37,6 +48,7 @@ func logVerdict(t *testing.T, input, basis string, got, want Verdict) {
 
 func TestVerifyVerdicts(t *testing.T) {
 	ca := newTestCA(t)
+	registerTestEntity(t, ca, "alice", UsageSign|UsageAuth)
 	cert, err := ca.Issue(validRequest("alice", UsageSign|UsageAuth))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
@@ -89,10 +101,12 @@ func TestIssueRejects(t *testing.T) {
 	}
 
 	// 序列号重复：显式指定已占用的序列号必须被拒绝，不得用默认值兜底。
+	registerTestEntity(t, ca, "carol", knownUsages)
 	cert, err := ca.Issue(validRequest("carol", UsageSign))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
+	registerTestEntity(t, ca, "dave", knownUsages)
 	dup := validRequest("dave", UsageSign)
 	dup.Serial = cert.Serial
 	_, err = ca.Issue(dup)
@@ -104,6 +118,7 @@ func TestIssueRejects(t *testing.T) {
 
 func TestRevokeOutcomes(t *testing.T) {
 	ca := newTestCA(t)
+	registerTestEntity(t, ca, "erin", UsageAuth)
 	cert, err := ca.Issue(validRequest("erin", UsageAuth))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)

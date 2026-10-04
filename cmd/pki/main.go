@@ -1,5 +1,6 @@
 // pki 是本地证书生命周期组件的命令行入口。
-// 子命令：issue / verify / rotate / revoke，状态保存在 -dir 目录。
+// 子命令：register / authorize / entity / issue / verify / rotate /
+// rotate-key / revoke，状态保存在 -dir 目录。
 package main
 
 import (
@@ -21,12 +22,20 @@ func main() {
 	}
 	var err error
 	switch os.Args[1] {
+	case "register":
+		err = cmdRegister(os.Args[2:])
+	case "authorize":
+		err = cmdAuthorize(os.Args[2:])
+	case "entity":
+		err = cmdEntity(os.Args[2:])
 	case "issue":
 		err = cmdIssue(os.Args[2:])
 	case "verify":
 		err = cmdVerify(os.Args[2:])
 	case "rotate":
 		err = cmdRotate(os.Args[2:])
+	case "rotate-key":
+		err = cmdRotateEntityKey(os.Args[2:])
 	case "revoke":
 		err = cmdRevoke(os.Args[2:])
 	default:
@@ -41,11 +50,15 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `用法: pki <子命令> [选项]
-  issue   -dir D -identity ID -usages sign,encrypt,auth -not-before T -not-after T [-serial N] [-subject-id S]
-  verify  -dir D -cert FILE [-at T] -usage sign
-  rotate  -dir D
-  revoke  -dir D -serial N
-时间格式为 RFC3339。`)
+  register    -dir D -identity ID -usages sign,encrypt,auth   登记受管实体并限定授权用途
+  authorize   -dir D -identity ID -usages sign,auth           全量调整实体授权用途
+  entity      -dir D -identity ID                             查看实体当前状态
+  issue       -dir D -identity ID -usages sign,encrypt,auth -not-before T -not-after T [-serial N] [-subject-id S]
+  verify      -dir D -cert FILE [-at T] -usage sign
+  rotate      -dir D                                          轮换签发方密钥
+  rotate-key  -dir D -identity ID                             轮换实体密钥
+  revoke      -dir D -serial N
+新实体必须先 register 才能 issue。时间格式为 RFC3339。`)
 }
 
 func parseUsages(s string) (pki.KeyUsage, error) {
@@ -70,6 +83,94 @@ func parseTime(s string) (time.Time, error) {
 		return time.Time{}, nil
 	}
 	return time.Parse(time.RFC3339, s)
+}
+
+func cmdRegister(args []string) error {
+	fs := flag.NewFlagSet("register", flag.ContinueOnError)
+	dir := fs.String("dir", ".pki", "状态目录")
+	identity := fs.String("identity", "", "实体标识")
+	usages := fs.String("usages", "", "授权用途，逗号分隔: sign,encrypt,auth")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	u, err := parseUsages(*usages)
+	if err != nil {
+		return err
+	}
+	ca, err := pki.NewCA(*dir)
+	if err != nil {
+		return err
+	}
+	info, err := ca.RegisterEntity(*identity, u)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("已登记实体 %s，授权用途 %s，当前实体密钥代 %d\n",
+		info.Identity, info.AllowedUsages, info.CurrentEpoch)
+	return nil
+}
+
+func cmdAuthorize(args []string) error {
+	fs := flag.NewFlagSet("authorize", flag.ContinueOnError)
+	dir := fs.String("dir", ".pki", "状态目录")
+	identity := fs.String("identity", "", "实体标识")
+	usages := fs.String("usages", "", "新的授权用途（全量替换），逗号分隔: sign,encrypt,auth")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	u, err := parseUsages(*usages)
+	if err != nil {
+		return err
+	}
+	ca, err := pki.NewCA(*dir)
+	if err != nil {
+		return err
+	}
+	info, err := ca.SetEntityAuthorizedUsages(*identity, u)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("实体 %s 的授权用途已调整为 %s\n", info.Identity, info.AllowedUsages)
+	return nil
+}
+
+func cmdEntity(args []string) error {
+	fs := flag.NewFlagSet("entity", flag.ContinueOnError)
+	dir := fs.String("dir", ".pki", "状态目录")
+	identity := fs.String("identity", "", "实体标识")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ca, err := pki.NewCA(*dir)
+	if err != nil {
+		return err
+	}
+	info, err := ca.Entity(*identity)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("实体 %s，授权用途 %s，当前实体密钥代 %d\n",
+		info.Identity, info.AllowedUsages, info.CurrentEpoch)
+	return nil
+}
+
+func cmdRotateEntityKey(args []string) error {
+	fs := flag.NewFlagSet("rotate-key", flag.ContinueOnError)
+	dir := fs.String("dir", ".pki", "状态目录")
+	identity := fs.String("identity", "", "实体标识")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ca, err := pki.NewCA(*dir)
+	if err != nil {
+		return err
+	}
+	epoch, err := ca.RotateEntityKey(*identity)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("实体 %s 新密钥代: %d（旧代保留用于历史证书）\n", *identity, epoch)
+	return nil
 }
 
 func cmdIssue(args []string) error {

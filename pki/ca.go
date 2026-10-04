@@ -69,29 +69,48 @@ func (c *CA) Issue(req IssueRequest) (*Certificate, error) {
 	if key == nil {
 		return nil, fmt.Errorf("%w: 当前密钥代 %d 不存在", ErrStoreCorrupt, next.CurrentEpoch)
 	}
+	// 受管实体必须已登记，且申请用途不得超出其授权范围；
+	// 两类拒绝彼此可区分，也与请求约束类失败分开。
+	entity := next.findEntity(req.Identity)
+	if entity == nil {
+		return nil, fmt.Errorf("%w: %s（未登记实体不允许签发）", ErrEntityNotFound, req.Identity)
+	}
+	if !entity.AllowedUsages.Has(req.Usages) {
+		return nil, fmt.Errorf("%w: 实体 %s 授权 %s，申请 %s",
+			ErrUsageNotAuthorized, req.Identity, entity.AllowedUsages, req.Usages)
+	}
+	currentEntityKey := entity.entityKeyForEpoch(entity.CurrentEpoch)
+	if currentEntityKey == nil {
+		return nil, fmt.Errorf("%w: 实体 %s 当前密钥代 %d 不存在",
+			ErrStoreCorrupt, req.Identity, entity.CurrentEpoch)
+	}
 	subjectID := req.SubjectID
 	if subjectID == "" {
 		subjectID = "subj:" + req.Identity
 	}
 	cert := &Certificate{
-		Serial:      serial,
-		Identity:    req.Identity,
-		Usages:      req.Usages,
-		NotBefore:   req.NotBefore.UTC(),
-		NotAfter:    req.NotAfter.UTC(),
-		IssuerEpoch: key.Epoch,
-		SubjectID:   subjectID,
+		Serial:       serial,
+		Identity:     req.Identity,
+		Usages:       req.Usages,
+		NotBefore:    req.NotBefore.UTC(),
+		NotAfter:     req.NotAfter.UTC(),
+		IssuerEpoch:  key.Epoch,
+		SubjectID:    subjectID,
+		SubjectKeyID: currentEntityKey.KeyID,
+		SubjectEpoch: currentEntityKey.Epoch,
 	}
 	cert.Signature = ed25519.Sign(key.Private, signingPayload(cert))
 	next.Issued = append(next.Issued, certRecord{
-		Serial:      cert.Serial,
-		Identity:    cert.Identity,
-		Usages:      cert.Usages,
-		NotBefore:   cert.NotBefore,
-		NotAfter:    cert.NotAfter,
-		IssuerEpoch: cert.IssuerEpoch,
-		SubjectID:   cert.SubjectID,
-		Signature:   cert.Signature,
+		Serial:       cert.Serial,
+		Identity:     cert.Identity,
+		Usages:       cert.Usages,
+		NotBefore:    cert.NotBefore,
+		NotAfter:     cert.NotAfter,
+		IssuerEpoch:  cert.IssuerEpoch,
+		SubjectID:    cert.SubjectID,
+		SubjectKeyID: cert.SubjectKeyID,
+		SubjectEpoch: cert.SubjectEpoch,
+		Signature:    cert.Signature,
 	})
 	if serial >= next.NextSerial {
 		next.NextSerial = serial + 1
@@ -130,6 +149,11 @@ func (s *state) clone() *state {
 	out.Keys = append([]keyRecord(nil), s.Keys...)
 	out.Issued = append([]certRecord(nil), s.Issued...)
 	out.Revoked = append([]revokeRecord(nil), s.Revoked...)
+	out.Entities = make([]entityRecord, len(s.Entities))
+	for i, e := range s.Entities {
+		out.Entities[i] = e
+		out.Entities[i].Keys = append([]entityKeyRecord(nil), e.Keys...)
+	}
 	return &out
 }
 
@@ -157,6 +181,8 @@ func (s *state) keyForEpoch(epoch uint64) *keyRecord {
 }
 
 // signingPayload 构造证书签名覆盖内容的确定性编码。
+// 实体密钥代次/公钥指纹仅对新证书追加：旧证书两者均为零值，
+// 追加条件不成立，载荷与历史签发时逐字节一致，旧签名继续有效。
 func signingPayload(cert *Certificate) []byte {
 	buf := make([]byte, 0, 128)
 	var num [8]byte
@@ -169,5 +195,9 @@ func signingPayload(cert *Certificate) []byte {
 	putU64(uint64(cert.NotAfter.UnixNano()))
 	putU64(cert.IssuerEpoch)
 	putStr(cert.SubjectID)
+	if cert.SubjectEpoch != 0 || cert.SubjectKeyID != "" {
+		putU64(cert.SubjectEpoch)
+		putStr(cert.SubjectKeyID)
+	}
 	return buf
 }

@@ -2,6 +2,7 @@ package pki
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,7 +70,57 @@ func (s *Store) Load() (*state, error) {
 			}
 		}
 	}
+	if err := st.validateEntities(); err != nil {
+		return nil, err
+	}
 	return &st, nil
+}
+
+// validateEntities 校验实体层记录的内部完整性。
+// 实体记录自相矛盾（重复标识、非法授权、代次缺失/重复、公钥与指纹不符、
+// 当前代不在密钥史中）属于“状态被改坏”，加载即拒绝，返回 ErrStoreCorrupt。
+// 证书与实体之间的代次/指纹对不上不在此拦截：这类“代次对不上”由 Verify
+// 明确给出 SUBJECT_EPOCH_UNKNOWN / SUBJECT_KEY_MISMATCH / UNKNOWN_ENTITY，
+// 不按猜测放行，也不与损坏状态混淆。
+// 旧状态（无 entities 段）天然通过：实体层是追加能力，不影响旧数据。
+func (s *state) validateEntities() error {
+	corrupt := func(format string, args ...any) error {
+		return fmt.Errorf("%w: %s", ErrStoreCorrupt, fmt.Sprintf(format, args...))
+	}
+	seen := make(map[string]bool, len(s.Entities))
+	for i := range s.Entities {
+		e := &s.Entities[i]
+		if err := validateIdentity(e.Identity); err != nil {
+			return corrupt("实体记录标识非法: %v", err)
+		}
+		if seen[e.Identity] {
+			return corrupt("实体标识重复登记: %s", e.Identity)
+		}
+		seen[e.Identity] = true
+		if !e.AllowedUsages.Valid() {
+			return corrupt("实体 %s 授权用途非法: %s", e.Identity, e.AllowedUsages)
+		}
+		if len(e.Keys) == 0 {
+			return corrupt("实体 %s 没有任何密钥代", e.Identity)
+		}
+		epochs := make(map[uint64]bool, len(e.Keys))
+		for _, k := range e.Keys {
+			if k.Epoch == 0 {
+				return corrupt("实体 %s 存在零代次密钥", e.Identity)
+			}
+			if epochs[k.Epoch] {
+				return corrupt("实体 %s 密钥代次重复: %d", e.Identity, k.Epoch)
+			}
+			epochs[k.Epoch] = true
+			if len(k.Public) != ed25519.PublicKeySize || entityKeyID(ed25519.PublicKey(k.Public)) != k.KeyID {
+				return corrupt("实体 %s 第 %d 代公钥损坏或与指纹不一致", e.Identity, k.Epoch)
+			}
+		}
+		if !epochs[e.CurrentEpoch] {
+			return corrupt("实体 %s 当前密钥代 %d 不在密钥史中", e.Identity, e.CurrentEpoch)
+		}
+	}
+	return nil
 }
 
 // Save 原子写入持久化状态（写临时文件 + fsync + rename），

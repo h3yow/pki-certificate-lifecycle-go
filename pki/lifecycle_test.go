@@ -14,6 +14,8 @@ func TestRotationKeepsHistory(t *testing.T) {
 	ca := newTestCA(t)
 	mid := testBase.Add(time.Hour)
 
+	registerTestEntity(t, ca, "old-entity", UsageSign)
+	registerTestEntity(t, ca, "new-entity", UsageSign)
 	old, err := ca.Issue(validRequest("old-entity", UsageSign))
 	if err != nil {
 		t.Fatalf("Issue old: %v", err)
@@ -44,10 +46,12 @@ func TestRotationFailureLeavesNoPartialState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCA: %v", err)
 	}
+	registerTestEntity(t, ca, "stable", UsageSign)
 	before, err := ca.Issue(validRequest("stable", UsageSign))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
+	registerTestEntity(t, ca, "after-fail", UsageSign)
 
 	// 注入一次持久化失败：轮换必须整体失败，旧状态保持可见。
 	ca.store.failSaves.Store(1)
@@ -82,6 +86,8 @@ func TestRestartRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCA: %v", err)
 	}
+	registerTestEntity(t, ca, "kept", UsageAuth)
+	registerTestEntity(t, ca, "doomed", UsageAuth)
 	kept, err := ca.Issue(validRequest("kept", UsageAuth))
 	if err != nil {
 		t.Fatalf("Issue kept: %v", err)
@@ -104,6 +110,7 @@ func TestRestartRecovery(t *testing.T) {
 	logVerdict(t, "重启后校验已吊销证书", "吊销记录已持久化", ca2.Verify(revoked, mid, UsageAuth), VerdictRevoked)
 
 	// 序列号游标已持久化：重启后签发不得重复历史序列号。
+	registerTestEntity(t, ca2, "post-restart", UsageSign)
 	next, err := ca2.Issue(validRequest("post-restart", UsageSign))
 	if err != nil {
 		t.Fatalf("Issue after restart: %v", err)
@@ -157,6 +164,7 @@ func TestStoreMissingFieldDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCA: %v", err)
 	}
+	registerTestEntity(t, ca, "defaults", UsageSign)
 	cert, err := ca.Issue(validRequest("defaults", UsageSign))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
@@ -177,6 +185,11 @@ func TestConcurrentIssueVerifyRotate(t *testing.T) {
 	serials := make(chan uint64, workers*perWorker)
 	errs := make(chan error, workers*perWorker*2)
 
+	for w := 0; w < workers; w++ {
+		for i := 0; i < perWorker; i++ {
+			registerTestEntity(t, ca, fmt.Sprintf("entity-%d-%d", w, i), UsageSign)
+		}
+	}
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(w int) {
