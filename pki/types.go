@@ -62,6 +62,13 @@ var (
 	ErrCertNotFound   = errors.New("pki: 证书不存在")
 )
 
+// 受管实体登记与授权的可区分结论。
+var (
+	ErrEntityNotRegistered = errors.New("pki: 实体未登记")
+	ErrEntityExists        = errors.New("pki: 实体已登记")
+	ErrUsageNotAuthorized  = errors.New("pki: 用途超出实体授权范围")
+)
+
 // 本地状态加载与轮换的可区分失败原因。
 var (
 	ErrStoreCorrupt   = errors.New("pki: 本地状态损坏")
@@ -136,7 +143,10 @@ type Certificate struct {
 	NotAfter    time.Time
 	IssuerEpoch uint64 // 签发时使用的签发方密钥代数
 	SubjectID   string
-	Signature   []byte
+	// SubjectEpoch 是签发时实体的密钥代数（≥1）。
+	// 0 表示实体层引入前签发的历史证书，按旧规则判定。
+	SubjectEpoch uint64
+	Signature    []byte
 }
 
 // Verdict 是证书校验结论，各类失败彼此可区分。
@@ -150,6 +160,8 @@ const (
 	VerdictUsageMismatch
 	VerdictRevoked
 	VerdictBadSignature
+	// VerdictUnknownSubject 表示证书记录的实体密钥代不在该实体的密钥历史中。
+	VerdictUnknownSubject
 )
 
 // String 返回结论的可读表示。
@@ -169,6 +181,8 @@ func (v Verdict) String() string {
 		return "REVOKED"
 	case VerdictBadSignature:
 		return "BAD_SIGNATURE"
+	case VerdictUnknownSubject:
+		return "UNKNOWN_SUBJECT"
 	default:
 		return fmt.Sprintf("Verdict(%d)", int(v))
 	}

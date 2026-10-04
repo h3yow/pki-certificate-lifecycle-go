@@ -26,6 +26,14 @@ func validRequest(identity string, usages KeyUsage) IssueRequest {
 	}
 }
 
+// mustRegister 登记实体并授予全部已知用途，供既有用例复用。
+func mustRegister(t *testing.T, ca *CA, identity string) {
+	t.Helper()
+	if err := ca.RegisterEntity(identity, knownUsages); err != nil {
+		t.Fatalf("RegisterEntity %q: %v", identity, err)
+	}
+}
+
 // logVerdict 按“输入 / 判定依据 / 最终结论”打印测试日志。
 func logVerdict(t *testing.T, input, basis string, got, want Verdict) {
 	t.Helper()
@@ -37,6 +45,7 @@ func logVerdict(t *testing.T, input, basis string, got, want Verdict) {
 
 func TestVerifyVerdicts(t *testing.T) {
 	ca := newTestCA(t)
+	mustRegister(t, ca, "alice")
 	cert, err := ca.Issue(validRequest("alice", UsageSign|UsageAuth))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
@@ -89,6 +98,8 @@ func TestIssueRejects(t *testing.T) {
 	}
 
 	// 序列号重复：显式指定已占用的序列号必须被拒绝，不得用默认值兜底。
+	mustRegister(t, ca, "carol")
+	mustRegister(t, ca, "dave")
 	cert, err := ca.Issue(validRequest("carol", UsageSign))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
@@ -104,6 +115,7 @@ func TestIssueRejects(t *testing.T) {
 
 func TestRevokeOutcomes(t *testing.T) {
 	ca := newTestCA(t)
+	mustRegister(t, ca, "erin")
 	cert, err := ca.Issue(validRequest("erin", UsageAuth))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)

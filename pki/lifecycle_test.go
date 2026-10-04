@@ -14,6 +14,8 @@ func TestRotationKeepsHistory(t *testing.T) {
 	ca := newTestCA(t)
 	mid := testBase.Add(time.Hour)
 
+	mustRegister(t, ca, "old-entity")
+	mustRegister(t, ca, "new-entity")
 	old, err := ca.Issue(validRequest("old-entity", UsageSign))
 	if err != nil {
 		t.Fatalf("Issue old: %v", err)
@@ -44,11 +46,12 @@ func TestRotationFailureLeavesNoPartialState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCA: %v", err)
 	}
+	mustRegister(t, ca, "stable")
+	mustRegister(t, ca, "after-fail")
 	before, err := ca.Issue(validRequest("stable", UsageSign))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-
 	// 注入一次持久化失败：轮换必须整体失败，旧状态保持可见。
 	ca.store.failSaves.Store(1)
 	_, err = ca.Rotate()
@@ -82,6 +85,9 @@ func TestRestartRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCA: %v", err)
 	}
+	mustRegister(t, ca, "kept")
+	mustRegister(t, ca, "doomed")
+	mustRegister(t, ca, "post-restart")
 	kept, err := ca.Issue(validRequest("kept", UsageAuth))
 	if err != nil {
 		t.Fatalf("Issue kept: %v", err)
@@ -131,7 +137,7 @@ func TestStoreCorruptionAndVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = NewCA(dir)
-	t.Logf("输入: 版本 99 的状态文件 | 判定依据: 超出支持版本 1 | 最终结论: %v", err)
+	t.Logf("输入: 版本 99 的状态文件 | 判定依据: 超出支持版本 %d | 最终结论: %v", stateFormatVersion, err)
 	if !errors.Is(err, ErrStoreVersion) {
 		t.Fatalf("version: got %v, want %v", err, ErrStoreVersion)
 	}
@@ -157,6 +163,7 @@ func TestStoreMissingFieldDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCA: %v", err)
 	}
+	mustRegister(t, ca, "defaults")
 	cert, err := ca.Issue(validRequest("defaults", UsageSign))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
@@ -173,6 +180,12 @@ func TestConcurrentIssueVerifyRotate(t *testing.T) {
 
 	const workers = 8
 	const perWorker = 20
+	// 预先登记全部实体，并发阶段只做签发/校验/轮换。
+	for w := 0; w < workers; w++ {
+		for i := 0; i < perWorker; i++ {
+			mustRegister(t, ca, fmt.Sprintf("entity-%d-%d", w, i))
+		}
+	}
 	var wg sync.WaitGroup
 	serials := make(chan uint64, workers*perWorker)
 	errs := make(chan error, workers*perWorker*2)

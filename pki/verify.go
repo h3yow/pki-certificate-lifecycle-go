@@ -6,8 +6,10 @@ import (
 )
 
 // Verify 在 at 时刻按 requireUsage 校验证书，返回可区分的结论。
-// 判定顺序：签发方可信 → 签名有效 → 尚未生效 → 已过期 → 用途匹配 → 未吊销。
-// 历史证书按其证书中记录的签发密钥代判定，轮换不影响其信任关系。
+// 判定顺序：签发方可信 → 签名有效 → 实体密钥代可辨认 → 尚未生效 → 已过期 →
+// 用途匹配 → 未吊销。
+// 历史证书按其证书中记录的签发密钥代与实体密钥代判定，轮换不影响其信任关系。
+// 实体层引入前签发的证书（SubjectEpoch 为 0）按旧规则判定，不要求实体登记。
 // 任何失败结论都不会被静默当作通过。
 func (c *CA) Verify(cert *Certificate, at time.Time, requireUsage KeyUsage) Verdict {
 	if cert == nil {
@@ -22,6 +24,14 @@ func (c *CA) Verify(cert *Certificate, at time.Time, requireUsage KeyUsage) Verd
 	}
 	if !ed25519.Verify(key.Public, signingPayload(cert), cert.Signature) {
 		return VerdictBadSignature
+	}
+	if cert.SubjectEpoch > 0 {
+		// 新证书必须能辨认其声明的实体密钥代：实体已登记且该代密钥
+		// 仍保留在实体密钥历史中（轮换只追加、不删除）。
+		entity, ok := c.st.Entities[cert.Identity]
+		if !ok || entity.entityKeyForEpoch(cert.SubjectEpoch) == nil {
+			return VerdictUnknownSubject
+		}
 	}
 	at = at.UTC()
 	if at.Before(cert.NotBefore) {

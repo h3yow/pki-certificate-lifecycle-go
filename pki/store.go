@@ -55,10 +55,13 @@ func (s *Store) Load() (*state, error) {
 			ErrStoreVersion, st.Version, stateFormatVersion)
 	}
 	// 缺失字段的确定语义：version 缺省视为 1；nextSerial 缺省视为 1；
-	// currentEpoch 缺省视为 keys 中最大代数。
+	// currentEpoch 缺省视为 keys 中最大代数；entities 缺省视为空
+	// （版本 1 的状态文件没有实体表，视为无任何已登记实体）。
 	if st.Version == 0 {
 		st.Version = 1
 	}
+	// 旧版本状态在内存中升级到当前格式；下次保存即按当前版本落盘。
+	st.Version = stateFormatVersion
 	if st.NextSerial == 0 {
 		st.NextSerial = 1
 	}
