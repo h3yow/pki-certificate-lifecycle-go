@@ -60,6 +60,11 @@ func (c *CA) Issue(req IssueRequest) (*Certificate, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrEntityNotRegistered, req.Identity)
 	}
+	// 实体记录必须内部一致才允许签发：否则可能签出连自己的校验都
+	// 不承认的证书（如当前密钥代不在密钥历史中）。损坏即明确拒绝。
+	if err := entity.validate(); err != nil {
+		return nil, fmt.Errorf("%w: 实体 %q 记录损坏: %v", ErrStoreCorrupt, req.Identity, err)
+	}
 	if !entity.AllowedUsages.Has(req.Usages) {
 		return nil, fmt.Errorf("%w: 实体 %q 授权 %s，申请 %s",
 			ErrUsageNotAuthorized, req.Identity, entity.AllowedUsages, req.Usages)
