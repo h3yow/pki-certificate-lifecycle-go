@@ -1,6 +1,7 @@
 package pki
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
@@ -57,6 +58,9 @@ func (c *CA) SetEntityUsages(identity string, allowed KeyUsage) error {
 	if !ok {
 		return fmt.Errorf("%w: %q", ErrEntityNotRegistered, identity)
 	}
+	if err := rec.validate(); err != nil {
+		return fmt.Errorf("%w: 实体 %q 记录损坏: %v", ErrStoreCorrupt, identity, err)
+	}
 	if rec.AllowedUsages == allowed {
 		return nil // 幂等：范围未变化，结果稳定
 	}
@@ -79,6 +83,9 @@ func (c *CA) EntityUsages(identity string) (KeyUsage, error) {
 	if !ok {
 		return 0, fmt.Errorf("%w: %q", ErrEntityNotRegistered, identity)
 	}
+	if err := rec.validate(); err != nil {
+		return 0, fmt.Errorf("%w: 实体 %q 记录损坏: %v", ErrStoreCorrupt, identity, err)
+	}
 	return rec.AllowedUsages, nil
 }
 
@@ -97,6 +104,11 @@ func (c *CA) RotateEntityKey(identity string) (newEpoch uint64, err error) {
 	rec, ok := c.st.Entities[identity]
 	if !ok {
 		return 0, fmt.Errorf("%w: %q", ErrEntityNotRegistered, identity)
+	}
+	// 记录损坏时拒绝轮换：不按猜出来的代次继续生成密钥，
+	// 避免在损坏记录上叠加看似正常的新状态。
+	if err := rec.validate(); err != nil {
+		return 0, fmt.Errorf("%w: 实体 %q 记录损坏: %v", ErrStoreCorrupt, identity, err)
 	}
 	next := c.st.clone()
 	rec = next.Entities[identity]
@@ -121,6 +133,53 @@ func (r *entityRecord) addKey(epoch uint64) error {
 		return err
 	}
 	r.Keys = append(r.Keys, entityKeyRecord{Epoch: epoch, Public: pub, Private: priv})
+	return nil
+}
+
+// validate 校验实体记录的内部一致性。记录必须满足：
+//   - 授权用途掩码合法（非空且不含未知位）；
+//   - 当前密钥代 ≥ 1 且密钥历史非空；
+//   - 密钥历史恰好覆盖第 1..CurrentEpoch 代，每代恰好一条
+//     （缺代、重复代、当前代缺失或出现超出当前代的代都视为损坏）；
+//   - 每代密钥材料本身合法：公钥/私钥长度符合 ed25519 规范且彼此对应。
+//
+// 返回的错误只描述损坏原因，不包装哨兵错误；由调用方包装为
+// ErrStoreCorrupt，保证“状态损坏”这一原因可一眼区分。
+func (r *entityRecord) validate() error {
+	if !r.AllowedUsages.Valid() {
+		return fmt.Errorf("授权用途非法 (%s)", r.AllowedUsages)
+	}
+	if r.CurrentEpoch == 0 {
+		return fmt.Errorf("当前密钥代为 0")
+	}
+	if len(r.Keys) == 0 {
+		return fmt.Errorf("密钥历史为空，当前代为 %d", r.CurrentEpoch)
+	}
+	if uint64(len(r.Keys)) != r.CurrentEpoch {
+		return fmt.Errorf("密钥历史共 %d 代，与当前代 %d 不一致（缺代或重复代）",
+			len(r.Keys), r.CurrentEpoch)
+	}
+	seen := make(map[uint64]bool, len(r.Keys))
+	for i := range r.Keys {
+		k := &r.Keys[i]
+		if k.Epoch == 0 || k.Epoch > r.CurrentEpoch {
+			return fmt.Errorf("密钥代 %d 超出合法范围 [1, %d]", k.Epoch, r.CurrentEpoch)
+		}
+		if seen[k.Epoch] {
+			return fmt.Errorf("密钥代 %d 重复", k.Epoch)
+		}
+		seen[k.Epoch] = true
+		if len(k.Public) != ed25519.PublicKeySize {
+			return fmt.Errorf("第 %d 代公钥长度 %d 非法", k.Epoch, len(k.Public))
+		}
+		if len(k.Private) != ed25519.PrivateKeySize {
+			return fmt.Errorf("第 %d 代私钥长度 %d 非法", k.Epoch, len(k.Private))
+		}
+		derived := ed25519.PrivateKey(k.Private).Public().(ed25519.PublicKey)
+		if !bytes.Equal(derived, k.Public) {
+			return fmt.Errorf("第 %d 代公钥与私钥不对应", k.Epoch)
+		}
+	}
 	return nil
 }
 

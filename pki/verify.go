@@ -26,10 +26,13 @@ func (c *CA) Verify(cert *Certificate, at time.Time, requireUsage KeyUsage) Verd
 		return VerdictBadSignature
 	}
 	if cert.SubjectEpoch > 0 {
-		// 新证书必须能辨认其声明的实体密钥代：实体已登记且该代密钥
-		// 仍保留在实体密钥历史中（轮换只追加、不删除）。
+		// 新证书必须能辨认其声明的实体密钥代：实体已登记、记录内部一致
+		// （当前代与密钥历史对得上、密钥材料合法），且该代密钥仍保留在
+		// 实体密钥历史中（轮换只追加、不删除）。
+		// 记录被改坏到代次对不上时同样判 UNKNOWN_SUBJECT：
+		// 损坏记录不作为可信判定依据，绝不放行。
 		entity, ok := c.st.Entities[cert.Identity]
-		if !ok || entity.entityKeyForEpoch(cert.SubjectEpoch) == nil {
+		if !ok || entity.validate() != nil || entity.entityKeyForEpoch(cert.SubjectEpoch) == nil {
 			return VerdictUnknownSubject
 		}
 	}

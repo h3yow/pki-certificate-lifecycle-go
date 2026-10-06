@@ -72,6 +72,13 @@ func (s *Store) Load() (*state, error) {
 			}
 		}
 	}
+	// 实体记录必须内部一致：当前代缺失、历史缺代/重复代、密钥材料非法
+	// 或授权用途非法都视为状态损坏，拒绝加载，绝不带损坏记录对外服务。
+	for id, rec := range st.Entities {
+		if err := rec.validate(); err != nil {
+			return nil, fmt.Errorf("%w: 实体 %q 记录损坏: %v", ErrStoreCorrupt, id, err)
+		}
+	}
 	return &st, nil
 }
 
